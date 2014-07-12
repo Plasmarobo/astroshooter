@@ -3,10 +3,15 @@
 <title>Astroshooter</title>
 <script src="src/jquery2.1.1.min.js"></script>
 <script src="src/game.js"></script>
+<link rel="stylesheet" href="assets/styles.css"></link>
 </head>
 <body>
-<div style="height:512px;width:512px">
-<canvas id="game_window" width="512" height="512" style="border:1px solid #FF0000;"></canvas>
+<div class="authority">
+<div class="gamewindow">
+<canvas id="gamewindow" width="512" height="512"></canvas>
+</div>
+<div  class="logwindow" style="height:512px;width:512px;overflow-y:auto" id="logwindow">
+</div>
 </div>
 </body>
 </html>

@@ -1,11 +1,13 @@
 var g_windowSize = 512;
-var g_gameWindowId = "game_window";
+var g_gameWindowId = "gamewindow";
 
 var g_planetRadius = 64;
-var g_planetMass = 1000;
+var g_planetMass = 10;
 var g_planetImageKey = "PLANET";
-var g_gravity = 2;
-var g_damping = 10;
+var g_gravity = 5;
+var g_damping = 8;
+var g_maxDamping = 10;
+var g_stickyFactor = 5;
 
 var g_numOrbits = 3;
 
@@ -14,9 +16,10 @@ var g_asteroidImageKey = "asteroid";
 var g_maxAsteroidSize = 16;
 var g_minAsteroidSize = 8;
 var g_asteroidMass = 1;
+var g_initialVelocity = 10;
 
-var g_maxAsteroidCount = 20;
-var g_minAsteroidCount = 5;
+var g_maxAsteroidCount = 100;
+var g_minAsteroidCount = 30;
 
 var g_maxStarSize = 5;
 var g_minStarSize = 1;
@@ -30,7 +33,7 @@ var g_orbitalRange = (g_windowSize/2)-g_planetRadius;
 var g_orbitWidth = g_orbitalRange/(g_numOrbits+1);
 
 var g_timeScale = 1/10;
-var g_maxTimestep = 5*g_timeScale; //ms
+var g_maxTimestep = 10*g_timeScale; //ms
 var g_gameTime = 0;
 
 var g_astroidColor = "#666666";
@@ -43,23 +46,30 @@ var g_lastUpdate = (new Date()).getTime();
 var g_vectorScale = 5;
 var g_debugDrawPhysicsVectors = false;
 var g_debugDrawDampingArcs = false;
-
+var g_logEnabled = true;
 
 var g_canvas = 0;
 var g_game = 0;
 var g_lastMouse = {x: 0, y: 0};
 
+var g_missileKey = "missile";
+var g_projectileSize = 16;
+
 var g_sprites;
 var g_assetList = [
 	g_planetImageKey,
-	g_asteroidImageKey
+	g_asteroidImageKey,
+	g_missileKey
 ];
+
+var g_eventQueue = [];
 
 $(document).ready(InitializeGame);
 
 function InitializeGame()
 {
 	g_canvas = GetCanvas();
+	g_canvas.drawRotated = DrawRotated.bind(g_canvas);
 	g_sprites = new Object();
 	LoadAssets(StartGame);
 }
@@ -137,11 +147,26 @@ function GetCanvas()
 			g_lastMouse = (function() {
 				var rect = canvas.getBoundingClientRect();
 				return {
+					position: {
 					x: evt.clientX - rect.left,
 					y: evt.clientY - rect.top
+					}
 					};
 				})();
 				
+			};
+	canvas.onmousedown = function(evt) {
+			var rect = canvas.getBoundingClientRect();
+			g_eventQueue[g_eventQueue.length] = (function() {
+				return {
+					type: "click",
+					position:
+					{
+					x: (evt.clientX - rect.left - g_windowSize/2),
+					y: (evt.clientY - rect.top - g_windowSize/2)
+					}
+				};
+			})();
 			};
 	return canvas.getContext("2d");
 }
@@ -155,16 +180,16 @@ function GenerateOrbitalPosition(orbitIndex)
 	var position = (Math.random()*(right))+left;
 	//Select a random starting position
 	var starting_angle = Math.random() * 2 * Math.PI;
-	return [Math.cos(starting_angle)*position, Math.sin(starting_angle)*position];
+	return Vec2XY(starting_angle, position); //{x: Math.cos(starting_angle)*position, y: Math.sin(starting_angle)*position};
 }
 
 function GenerateOrbitalVelocity(position, orbitIndex)
 {
 	//Consider 0 0 planet origin
-	var distance = 2*Math.sqrt(Math.pow(position[0],2) + Math.pow(position[1],2));
+	var distance = g_initialVelocity * Math.sqrt(Math.pow(position.x,2) + Math.pow(position.y,2));
 	var critical_speed = Math.sqrt(g_gravity * g_planetMass / distance);
-	var angle = Math.atan2(position[1], position[0]);
-	var critical_velocity = [-Math.sin(angle) * (critical_speed), Math.cos(angle) *(critical_speed)];
+	var angle = Math.atan2(position.y, position.x);
+	var critical_velocity = Vec2XY(angle + Math.PI/2, critical_speed);//{x: -Math.sin(angle) * (critical_speed), y: Math.cos(angle) *(critical_speed)};
 	return critical_velocity;
 	
 }
@@ -175,9 +200,9 @@ function GenerateAsteroid()
 	{
 		size: (Math.random()*(g_maxAsteroidSize-g_minAsteroidSize))+g_minAsteroidSize,
 		orbitIndex: Math.floor(Math.random()*g_numOrbits),
-		acceleration: [0,0],
-		velocity: [0,0],
-		position: [0,0],
+		acceleration: {x: 0, y: 0},
+		velocity: {x: 0, y: 0},
+		position: {x: 0,y: 0},
 		mass: g_asteroidMass,
 		image: GetSprite(g_asteroidImageKey)
 	}
@@ -191,12 +216,12 @@ function GenerateStar()
 	var star = 
 	{
 	size: 1,
-	position: [0, 0],
+	position: {x: 0, y: 0},
 	color: [255,255,255],
 	flux: 0
 	}
-	star.position[0] = Math.floor(Math.random()*g_windowSize);
-	star.position[1] = Math.floor(Math.random()*g_windowSize);
+	star.position.x = Math.floor(Math.random()*g_windowSize);
+	star.position.y = Math.floor(Math.random()*g_windowSize);
 	star.color[0] = Math.ceil(Math.random()*(255-g_minStarBrightness))+g_minStarBrightness;
 	star.color[1] = Math.ceil(Math.random()*(255-g_minStarBrightness))+g_minStarBrightness;
 	star.color[2] = Math.ceil(Math.random()*(255-g_minStarBrightness))+g_minStarBrightness;
@@ -209,6 +234,8 @@ function GenerateSystem()
 	var system =
 	{
 		size: g_windowSize,
+		//eventQueue: [],
+		eventHandlers: null,
 		planet: { 
 					radius: g_planetRadius,
 					mass: g_planetMass,
@@ -216,11 +243,82 @@ function GenerateSystem()
 				},
 		stars: [],
 		asteroids: [],
-		ships: []
+		ships: [],
+		projectiles: [],
+		finished_projectiles: [],
+		explosions: [],
+		LaunchProjectile : function(event)
+		{
+			Log("system", "generating projectile");
+			if(typeof event.origin == 'undefined')
+				event.origin = {x: 0, y: 0};
+			var local_x = event.position.x - event.origin.x;
+			var local_y = event.position.y - event.origin.y;
+			var distance = Math.sqrt(Math.pow(local_x, 2) + Math.pow(local_y, 2));
+			var angle = Math.atan2(local_y, local_x);
+			var speed = 2;
+			var projectile = {
+				heading: angle,
+				position : {x: event.origin.x, y: event.origin.y},
+				velocity : Vec2XY(angle, speed),
+				acceleration : {x: 0, y: 0},
+				mass: 10,
+				target: {x: event.position.x, y: event.position.y},
+				target_proximiny: 6,
+				target_event: {type: "explosion", yield: 50},
+				image: GetSprite(g_missileKey)
+			};
+			this.projectiles[this.projectiles.length] = projectile;
+		},
+		GenerateExplosion : function(event)
+		{
+			event.max_distance = event.yield;
+			event.decay_rate = event.yield/20;
+			event.Filter = function(target){return NearTarget(this.position, target.position, this.max_distance);};
+			event.Apply = function(target){
+				var local_x = this.position.x - target.position.x;
+				var local_y = this.position.y - target.position.y;
+				var angle = Math.atan2(local_y, local_x);
+				var distance = 1 + Math.sqrt(Math.pow(local_x, 2) + Math.pow(local_y, 2));
+				var magnitude = this.yield/(target.mass*Math.pow(distance, 2));
+				Vec2Add(target.acceleration, Vec2XY(angle, magnitude));
+			};
+			this.explosions[this.explosions.length] = event;
+			this.Broadcast(event);
+		},
+		Broadcast : function(event)
+		{
+			for(var index = 0; index < this.asteroids.length; ++index)
+			{
+				var asteroid = this.asteroids[index];
+				if(event.Filter(asteroid))
+				{
+					event.Apply(asteroid);
+				}
+			}
+			for(var index = 0; index < this.ships.length; ++index)
+			{
+				var ship = this.ships[index];
+				if(event.Filter(ship))
+				{
+					event.Apply(ship);
+				}
+			}
+			for(var index = 0; index < this.projectiles.length; ++index)
+			{
+				var projectile = this.projectiles[index];
+				if(event.Filter(projectile))
+				{
+					event.Apply(projectile);
+				}
+			}
+		}
 	}
 	var desired_asteroid_count = Math.floor(Math.random()*(g_maxAsteroidCount-g_minAsteroidCount))+g_minAsteroidCount;
 	var desired_star_count = Math.floor(Math.random()*100)+5;
-	
+	system.eventHandlers = new Object;
+	system.eventHandlers["click"] = system.LaunchProjectile.bind(system);
+	system.eventHandlers["explosion"] = system.GenerateExplosion.bind(system); 
 	while(system.asteroids.length < desired_asteroid_count)
 	{
 		system.asteroids[system.asteroids.length] = GenerateAsteroid();
@@ -236,6 +334,14 @@ function GenerateSystem()
 function UpdateSystem(system)
 {
 	var time_delta = (((new Date()).getTime())-g_lastUpdate)*g_timeScale;
+	while(g_eventQueue.length > 0)
+	{
+		var event = g_eventQueue.shift();
+		if(system.eventHandlers[event.type])
+		{
+			(system.eventHandlers[event.type])(event);
+		}
+	}
 	if (time_delta > g_maxTimestep)
 	{
 		time_delta = g_maxTimestep;
@@ -244,38 +350,86 @@ function UpdateSystem(system)
 		//Update asteroids
 		for(var index = 0; index < system.asteroids.length; ++index)
 		{
-			asteroid = system.asteroids[index];
+			var asteroid = system.asteroids[index];
 		
-			var distance = Math.sqrt(Math.pow(asteroid.position[1], 2) + Math.pow(asteroid.position[0], 2));
+			var distance = Math.sqrt(Math.pow(asteroid.position.x, 2) + Math.pow(asteroid.position.y, 2));
 			var gravity = ( g_gravity * system.planet.mass )/Math.pow(distance, 2);
 		
-			var x_angle = Math.acos(asteroid.position[0]/distance);
-			var y_angle = Math.asin(asteroid.position[1]/distance);
+			var angle = Math.atan2(asteroid.position.y, asteroid.position.x);
 		
 			DampVelocityToOrbit(asteroid, time_delta);
-	
-			asteroid.velocity[0] += asteroid.acceleration[0] * time_delta;
-			asteroid.velocity[1] += asteroid.acceleration[1] * time_delta;
-		
-			asteroid.acceleration[0] = -Math.cos(x_angle) * gravity * time_delta;
-			asteroid.acceleration[1] = -Math.sin(y_angle) * gravity * time_delta;
+			Vec2Add(asteroid.velocity, asteroid.acceleration, time_delta);
+			Vec2Set(asteroid.acceleration, Vec2XY(angle+Math.PI, gravity), time_delta); 
 	
 		}
-	
+		//Update projectiles
+		for(var index = 0; index < system.finished_projectiles.length; ++ index)
+		{
+			system.projectiles.splice(system.finished_projectiles[index], 1);
+		}
+		system.finished_projectiles = [];
+		for(var index = 0; index < system.projectiles.length; ++index)
+		{
+			var projectile = system.projectiles[index];
+			if((Math.abs(projectile.position.x) > g_windowSize/2) || (Math.abs(projectile.position.y) > g_windowSize/2))
+			{
+				system.finished_projectiles[system.finished_projectiles.length] = index;
+				continue;
+			}
+				
+			Vec2Add(projectile.position, projectile.velocity, time_delta);
+			Vec2Add(projectile.velocity, projectile.acceleration, time_delta);
+			
+			if(NearTarget(projectile.position, projectile.target, projectile.target_proximiny))
+			{
+				Log("Projectile:", "Target Hit!");
+				var event = projectile.target_event;
+				
+				event.position = projectile.position;
+				
+				AddEvent(g_eventQueue, event);
+				system.finished_projectiles[system.finished_projectiles.length] = index;
+			}
+		}
+		var finished_explosions = [];
+		for(var index = 0; index < system.explosions.length; ++index)
+		{
+			var explosion = system.explosions[index];
+			explosion.yield = explosion.yield - explosion.decay_rate * time_delta;
+			explosion.max_distance = explosion.max_distance - explosion.decay_rate * time_delta;
+			if(explosion.max_distance < 1)
+			{
+				finished_explosions[finished_explosions.length] = index;
+			}
+		}
+		for(var index = 0; index < finished_explosions.length; ++index)
+		{
+			system.explosions.splice(finished_explosions[index], 1);
+		}
+		
 	
 	g_lastUpdate = (new Date()).getTime();
+}
+function AddEvent(queue, event)
+{
+	queue[queue.length] = event;
+}
+function NearTarget(object, target, tolerance)
+{
+	var distance = Math.sqrt(Math.pow(target.x - object.x,2) + Math.pow(target.y - object.y,2));
+	return distance < tolerance;
 }
 
 function DampVelocityToOrbit(asteroid, time_delta)
 {
 	//Calculate desired arc
-	var distance = Math.sqrt(Math.pow(asteroid.position[0], 2) + Math.pow(asteroid.position[1], 2));
+	var distance = Math.sqrt(Math.pow(asteroid.position.x, 2) + Math.pow(asteroid.position.y, 2));
 	
-	var linear_x = asteroid.position[0] + asteroid.velocity[0] * time_delta;
-	var linear_y = asteroid.position[1] + asteroid.velocity[1] * time_delta;
+	var linear_x = asteroid.position.x + asteroid.velocity.x * time_delta;
+	var linear_y = asteroid.position.y + asteroid.velocity.y * time_delta;
 	
-	var angle = Math.atan2(asteroid.position[1], asteroid.position[0]);
-	var velocity_arc_length = Math.sqrt(Math.pow(asteroid.velocity[0], 2) + Math.pow(asteroid.velocity[1],2))*time_delta;
+	var angle = Math.atan2(asteroid.position.y, asteroid.position.x);
+	var velocity_arc_length = Math.sqrt(Math.pow(asteroid.velocity.x, 2) + Math.pow(asteroid.velocity.y,2))*time_delta;
 	
 	var projected_angle = angle+(velocity_arc_length)/distance;
 	
@@ -300,26 +454,71 @@ function DampVelocityToOrbit(asteroid, time_delta)
 		g_canvas.stroke();	
 	}
 	
-	var linear_error = Math.abs(linear_x) - Math.abs(arc_x) + Math.abs(linear_y) - Math.abs(arc_y);
+	var linear_error = Math.sqrt(Math.pow(linear_x- arc_x, 2) + Math.pow(linear_y - arc_y, 2));
 	
-	if ( linear_error < (g_damping * g_timeScale))
+	if ( linear_error < (g_stickyFactor * g_timeScale))
 	{
-		asteroid.velocity[0] = arc_x - asteroid.position[0];
-		asteroid.velocity[1] = arc_y - asteroid.position[1];
-		asteroid.position[0] = arc_x;
-		asteroid.position[1] = arc_y;
+		var arc_damping = g_maxDamping - g_damping;
+		asteroid.velocity.x = (arc_damping * velocity_arc_length * Math.cos(projected_angle+Math.PI/2) + g_damping * asteroid.velocity.x)/g_maxDamping;
+		asteroid.velocity.y = (arc_damping * velocity_arc_length * Math.sin(projected_angle+Math.PI/2) + g_damping * asteroid.velocity.y)/g_maxDamping;
+		asteroid.position.x = arc_x;
+		asteroid.position.y = arc_y;
 		
 	}else{
-		asteroid.position[0] = linear_x;
-		asteroid.position[1] = linear_y;
+		asteroid.position.x = linear_x;
+		asteroid.position.y = linear_y;
 	}
 	
+}
+
+function Vec2Set(a, b, time)
+{
+	if(typeof time == 'undefined')
+		time = 1;
+	a.x = b.x * time;
+	a.y = b.y * time;
+}
+
+function Vec2Add(a, b, time)
+{
+	if(typeof time == 'undefined')
+		time = 1;
+	a.x += (b.x * time);
+	a.y += (b.y * time);
+}
+
+function Vec2XY(angle, magnitude)
+{
+	return {x: magnitude * Math.cos(angle), y: magnitude * Math.sin(angle)};
+}
+
+function DrawRotated(image, x, y, angle) { 
+ 
+	this.save(); 
+	this.translate(x+g_windowSize/2, y+g_windowSize/2);
+	this.rotate(angle);
+	this.drawImage(image, -(image.width/2), -(image.height/2));
+	this.restore(); 
 }
 
 function ClearCanvas(canvas)
 {
 	canvas.fillStyle="#000000";
 	canvas.fillRect(0,0,g_windowSize, g_windowSize);
+}
+
+function DrawPhysicsVectors(canvas, pva_object)
+{
+	canvas.beginPath();
+	canvas.strokeStyle = "#FF0000";
+	canvas.moveTo(pva_object.position.x+g_windowSize/2, pva_object.position.y+g_windowSize/2);
+	canvas.lineTo(pva_object.position.x+(g_windowSize/2)+pva_object.velocity.x*(g_vectorScale/g_timeScale), pva_object.position.y+(g_windowSize/2)+pva_object.velocity.y*(g_vectorScale/g_timeScale));
+	canvas.stroke();
+	canvas.beginPath();
+	canvas.strokeStyle = "#00FF00";
+	canvas.moveTo(pva_object.position.x+(g_windowSize/2), pva_object.position.y+(g_windowSize/2));
+	canvas.lineTo(pva_object.position.x+(g_windowSize/2)+pva_object.acceleration.x*(g_vectorScale/g_timeScale), pva_object.position.y+(g_windowSize/2)+pva_object.acceleration.y*(g_vectorScale/g_timeScale));
+	canvas.stroke();
 }
 
 function DrawSystem(canvas, system)
@@ -336,7 +535,17 @@ function DrawSystem(canvas, system)
 		asteroid = system.asteroids[index];
 		DrawAsteroid(canvas, asteroid);
 	}
-	//DrawCursor(canvas, g_lastMouse);
+	for(var index = 0; index < system.explosions.length; ++index)
+	{
+		explosion = system.explosions[index];
+		DrawExplosion(canvas, explosion);
+	}		
+	for(var index = 0; index < system.projectiles.length; ++index)
+	{
+		projectile = system.projectiles[index];
+		DrawProjectile(canvas, projectile);
+	}
+	//DrawCursor(canvas, g_lastMouse.position);
 }
 
 function DrawStar(canvas, star)
@@ -344,7 +553,18 @@ function DrawStar(canvas, star)
 	//No coordinate translation required
 	canvas.fillStyle = "rgb(" + star.color[0] + "," + star.color[1] + "," + star.color[2] + ")";
 	canvas.beginPath();
-	canvas.arc(star.position[0], star.position[1], star.size, 0, g_circleRad);
+	canvas.arc(star.position.x, star.position.y, star.size, 0, g_circleRad);
+	canvas.fill();
+}
+
+function DrawExplosion(canvas, explosion)
+{
+	canvas.beginPath();
+	var blast = canvas.createRadialGradient(explosion.position.x+g_windowSize/2,explosion.position.y+g_windowSize/2,explosion.max_distance/2, explosion.position.x+g_windowSize/2, explosion.position.y+g_windowSize/2, explosion.max_distance);
+	blast.addColorStop(0, "red");
+	blast.addColorStop(1, "yellow");
+	canvas.arc(explosion.position.x+g_windowSize/2, explosion.position.y+g_windowSize/2, explosion.max_distance, 0, g_circleRad);
+	canvas.fillStyle = blast;
 	canvas.fill();
 }
 
@@ -353,26 +573,17 @@ function DrawAsteroid(canvas, asteroid)
 	//Move asteroids into screenspace
 	if(asteroid.image)
 	{
-		canvas.drawImage(asteroid.image, asteroid.position[0] - asteroid.size + g_windowSize/2, asteroid.position[1] - asteroid.size + g_windowSize/2, asteroid.size, asteroid.size);
+		canvas.drawImage(asteroid.image, asteroid.position.x - asteroid.size/2 + g_windowSize/2, asteroid.position.y - asteroid.size/2 + g_windowSize/2, asteroid.size, asteroid.size);
 	}else{
 		canvas.fillStyle = g_astroidColor;
 		canvas.beginPath();
 		canvas.strokeStyle = "#000000";
-		canvas.arc(asteroid.position[0]+(g_windowSize/2), asteroid.position[1]+(g_windowSize/2), asteroid.size, 0, g_circleRad);
+		canvas.arc(asteroid.position.x+(g_windowSize/2), asteroid.position.y+(g_windowSize/2), asteroid.size, 0, g_circleRad);
 		canvas.fill();
 	}
 	if(g_debugDrawPhysicsVectors)
 	{
-		canvas.beginPath();
-		canvas.strokeStyle = "#FF0000";
-		canvas.moveTo(asteroid.position[0]+g_windowSize/2, asteroid.position[1]+g_windowSize/2);
-		canvas.lineTo(asteroid.position[0]+(g_windowSize/2)+asteroid.velocity[0]*(g_vectorScale/g_timeScale), asteroid.position[1]+(g_windowSize/2)+asteroid.velocity[1]*(g_vectorScale/g_timeScale));
-		canvas.stroke();
-		canvas.beginPath();
-		canvas.strokeStyle = "#00FF00";
-		canvas.moveTo(asteroid.position[0]+(g_windowSize/2), asteroid.position[1]+(g_windowSize/2));
-		canvas.lineTo(asteroid.position[0]+(g_windowSize/2)+asteroid.acceleration[0]*(g_vectorScale/g_timeScale), asteroid.position[1]+(g_windowSize/2)+asteroid.acceleration[1]*(g_vectorScale/g_timeScale));
-		canvas.stroke();
+		DrawPhysicsVectors(canvas, asteroid);
 	}
 }
 
@@ -389,7 +600,35 @@ function DrawPlanet(canvas, planet)
 	}
 }
 
-
+function DrawProjectile(canvas, projectile)
+{
+	if(projectile.image)
+	{
+		canvas.drawRotated(projectile.image, projectile.position.x, projectile.position.y, projectile.heading+Math.PI/2);
+	}else{
+		canvas.strokeStyle = "#FFFF00";
+		canvas.beginPath();
+		canvas.arc(projectile.position.x - g_windowSize/2, projectile.position.y - g_windowSize/2, 4, 0, g_circleRad);
+		canvas.stroke();
+	}
+	canvas.strokeStyle = "#FFFF00";
+	canvas.beginPath();
+	canvas.arc(projectile.target.x+g_windowSize/2, projectile.target.y+g_windowSize/2, 5, 0, g_circleRad);
+	canvas.stroke();
+	canvas.beginPath();
+	canvas.moveTo(projectile.target.x+g_windowSize/2, projectile.target.y+g_windowSize/2, g_windowSize/2);
+	canvas.lineTo(projectile.target.x+5+g_windowSize/2, projectile.target.y+g_windowSize/2);
+	canvas.lineTo(projectile.target.x-5+g_windowSize/2, projectile.target.y+g_windowSize/2);
+	canvas.moveTo(projectile.target.x+g_windowSize/2, projectile.target.y+g_windowSize/2, g_windowSize/2);
+	canvas.lineTo(projectile.target.x+g_windowSize/2, projectile.target.y+5+g_windowSize/2);
+	canvas.lineTo(projectile.target.x+g_windowSize/2, projectile.target.y-5+g_windowSize/2);
+	canvas.stroke();
+	
+	if(g_debugDrawPhysicsVectors)
+	{
+		DrawPhysicsVectors(canvas, projectile);
+	}
+}
 
 function DrawCursor(canvas, coordinates)
 {
@@ -416,7 +655,18 @@ function DrawCursor(canvas, coordinates)
 	canvas.stroke();
 	canvas.fillStyle = "#FFFFFF";
 	canvas.font="20px Georgia";
-	//canvas.fillText(Math.sin(x_angle),coordinates.x,coordinates.y);
-	//canvas.fillText(Math.cos(x_angle),coordinates.x,coordinates.y+21);
-	
+	canvas.fillText(coordinates.x,coordinates.x,coordinates.y);
+	canvas.fillText(coordinates.y,coordinates.x,coordinates.y+21);
+}
+
+function Log(component, message)
+{
+	if(g_logEnabled)
+	{
+		var time = new Date();
+		var logwindow = document.getElementById("logwindow");
+		var log_message = $("<div class='logmsg'>");
+		$(log_message).append("time: " + component + "<br/><p>" + message +"</p>");  
+		$(logwindow).append(log_message);
+	}
 }
