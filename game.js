@@ -2,8 +2,7 @@ var g_windowSize = 512;
 var g_gameWindowId = "game_window";
 
 var g_planetRadius = 64;
-var g_planetGravity = 2;
-var g_planetMass = 100;
+var g_planetGravity = 1;
 
 var g_numOrbits = 3;
 
@@ -24,7 +23,9 @@ var g_minStarBrightness = 200;
 var g_orbitalRange = (g_windowSize/2)-g_planetRadius;
 var g_orbitWidth = g_orbitalRange/(g_numOrbits+1);
 
-var g_minTimestep = 100; //ms
+var g_minTimestep = 1000; //ms
+var g_timeScale = 1/10;
+var g_gameTime = 0;
 
 var g_astroidColor = "#666666";
 var g_planetColor = "#000066";
@@ -33,9 +34,11 @@ var g_circleRad = 2*Math.PI;
 
 var g_fps_target = 60;
 var g_lastUpdate = (new Date()).getTime();
+var g_vectorScale = 5;
 
 var g_canvas = 0;
 var g_game = 0;
+var g_lastMouse = {x: 0, y: 0};
 
 window.onload = function(){
 	(function() {
@@ -78,6 +81,17 @@ function RunGame()
 function GetCanvas()
 {
 	var canvas = document.getElementById(g_gameWindowId);
+	canvas.onmousemove = function(evt) {
+	
+			g_lastMouse = (function() {
+				var rect = canvas.getBoundingClientRect();
+				return {
+					x: evt.clientX - rect.left,
+					y: evt.clientY - rect.top
+					};
+				})();
+				
+			};
 	return canvas.getContext("2d");
 }
 
@@ -97,12 +111,12 @@ function GenerateOrbitalVelocity(position, orbitIndex)
 {
 	//Consider 0 0 planet origin
 	var distance = Math.sqrt(Math.pow(position[0],2) + Math.pow(position[1],2));
-	var critical_speed = 5*Math.sqrt( (g_planetMass*g_planetGravity) / distance);
+	var critical_speed = Math.sqrt(distance/(10000*g_planetGravity));
 	var x_angle = Math.acos(position[0]/distance);
 	var y_angle = Math.asin(position[1]/distance);
-	var critical_velocity = [-Math.sin(x_angle) * (critical_speed), Math.cos(y_angle) *(critical_speed)];
+	var critical_velocity = [-Math.sin(y_angle) * (critical_speed), Math.cos(x_angle) *(critical_speed)];
 	return critical_velocity;
-	//return orbitIndex%2 ? critical_velocity : -critical_velocity;
+	
 }
 
 function GenerateAsteroid()
@@ -145,7 +159,7 @@ function GenerateSystem()
 		size: g_windowSize,
 		planet: { 
 					radius: g_planetRadius,
-					gravity: g_planetGravity
+					gravity: g_planetGravity,
 				},
 		stars: [],
 		asteroids: [],
@@ -168,35 +182,32 @@ function GenerateSystem()
 
 function UpdateSystem(system)
 {
-	var time_delta = ((new Date()).getTime())-g_lastUpdate;
-	var time_steps = time_delta/g_minTimestep;
-	
-	while(time_steps > 0)
+	var time_delta = (((new Date()).getTime())-g_lastUpdate)*g_timeScale;
+	g_gameTime += time_delta;
+	//Update asteroids
+	for(var index = 0; index < system.asteroids.length; ++index)
 	{
-		var time_slice = 0;
-		if(time_steps > 1)
-		{
-			time_slice = 1;
-			time_steps -= 1;
-		}else{
-			time_slice = time_steps;
-			time_steps = 0;
-		}
-		//Update asteroids
-		for(var index = 0; index < system.asteroids.length; ++index)
-		{
-			asteroid = system.asteroids[index];
-			asteroid.position[0] += asteroid.velocity[0] * time_slice;
-			asteroid.position[1] += asteroid.velocity[1] * time_slice;
-			asteroid.velocity[0] += asteroid.acceleration[0] * time_slice;
-			asteroid.velocity[1] += asteroid.acceleration[1] * time_slice;
-			var distance = Math.sqrt(Math.pow(asteroid.position[1], 2) + Math.pow(asteroid.position[0], 2));
-			var x_angle = Math.acos(asteroid.position[0]/distance);
-			var y_angle = Math.asin(asteroid.position[1]/distance);
-			asteroid.acceleration[0] = -Math.cos(x_angle) * system.planet.gravity * time_slice;
-			asteroid.acceleration[1] = -Math.sin(y_angle) * system.planet.gravity * time_slice;
-		}
+		asteroid = system.asteroids[index];
+		
+		var distance = Math.sqrt(Math.pow(asteroid.position[1], 2) + Math.pow(asteroid.position[0], 2));
+		var gravity = system.planet.gravity/Math.pow(distance,2);
+		//var gravity = system.planet.gravity;
+		
+		var x_angle = Math.acos(asteroid.position[0]/distance);
+		var y_angle = Math.asin(asteroid.position[1]/distance);
+		
+		
+		asteroid.acceleration[0] = -Math.cos(x_angle) * gravity * time_delta;
+		asteroid.acceleration[1] = -Math.sin(y_angle) * gravity * time_delta;
+		
+		asteroid.velocity[0] += asteroid.acceleration[0] * time_delta;
+		asteroid.velocity[1] += asteroid.acceleration[1] * time_delta;
+		
+		asteroid.position[0] += asteroid.velocity[0] * time_delta;
+		asteroid.position[1] += asteroid.velocity[1] * time_delta;
+		
 	}
+	
 	g_lastUpdate = (new Date()).getTime();
 }
 
@@ -220,6 +231,7 @@ function DrawSystem(canvas, system)
 		asteroid = system.asteroids[index];
 		DrawAsteroid(canvas, asteroid);
 	}
+	//DrawCursor(canvas, g_lastMouse);
 }
 
 function DrawStar(canvas, star)
@@ -242,12 +254,12 @@ function DrawAsteroid(canvas, asteroid)
 	canvas.beginPath();
 	canvas.strokeStyle = "#FF0000";
 	canvas.moveTo(asteroid.position[0]+g_windowSize/2, asteroid.position[1]+g_windowSize/2);
-	canvas.lineTo(asteroid.position[0]+(g_windowSize/2)+asteroid.velocity[0]*5, asteroid.position[1]+(g_windowSize/2)+asteroid.velocity[1]*5);
+	canvas.lineTo(asteroid.position[0]+(g_windowSize/2)+asteroid.velocity[0]*(g_vectorScale/g_timeScale), asteroid.position[1]+(g_windowSize/2)+asteroid.velocity[1]*(g_vectorScale/g_timeScale));
 	canvas.stroke();
 	canvas.beginPath();
 	canvas.strokeStyle = "#00FF00";
 	canvas.moveTo(asteroid.position[0]+(g_windowSize/2), asteroid.position[1]+(g_windowSize/2));
-	canvas.lineTo(asteroid.position[0]+(g_windowSize/2)+asteroid.acceleration[0]*5, asteroid.position[1]+(g_windowSize/2)+asteroid.acceleration[1]*5);
+	canvas.lineTo(asteroid.position[0]+(g_windowSize/2)+asteroid.acceleration[0]*(g_vectorScale/g_timeScale), asteroid.position[1]+(g_windowSize/2)+asteroid.acceleration[1]*(g_vectorScale/g_timeScale));
 	canvas.stroke();
 }
 
@@ -257,4 +269,36 @@ function DrawPlanet(canvas, planet)
 	canvas.beginPath();
 	canvas.arc(g_windowSize/2, g_windowSize/2, planet.radius,0, g_circleRad);
 	canvas.fill();
+}
+
+
+
+function DrawCursor(canvas, coordinates)
+{
+	canvas.beginPath();
+	canvas.strokeStyle = "#0000FF";
+	canvas.moveTo(g_windowSize/2, g_windowSize/2);
+	canvas.lineTo(coordinates.x, coordinates.y);
+	canvas.stroke();
+	
+	var x = coordinates.x-(g_windowSize/2);
+	var y = coordinates.y-(g_windowSize/2);
+	var distance = Math.sqrt(Math.pow(x,2) + Math.pow(y,2));
+	
+	var x_angle = Math.acos(x/distance);
+	var y_angle = Math.asin(y/distance);
+	
+	var x_term = -Math.sin(y_angle)*55;
+	var y_term = Math.cos(x_angle)*55;
+	
+	canvas.beginPath();
+	canvas.strokeStyle = "#FF0000";
+	canvas.moveTo(coordinates.x, coordinates.y);
+	canvas.lineTo(coordinates.x - x_term, coordinates.y - y_term);
+	canvas.stroke();
+	canvas.fillStyle = "#FFFFFF";
+	canvas.font="20px Georgia";
+	//canvas.fillText(Math.sin(x_angle),coordinates.x,coordinates.y);
+	//canvas.fillText(Math.cos(x_angle),coordinates.x,coordinates.y+21);
+	
 }
