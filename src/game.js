@@ -5,9 +5,9 @@ var g_planetRadius = 64;
 var g_planetMass = 10;
 var g_planetImageKey = "PLANET";
 var g_gravity = 5;
-var g_damping = 8;
+var g_damping = 2;
 var g_maxDamping = 10;
-var g_stickyFactor = 5;
+var g_stickyFactor = 3;
 
 var g_numOrbits = 3;
 
@@ -59,6 +59,7 @@ var g_playerKey = "player";
 var g_weaponSpeed = 7;
 
 var g_bulletKey = "bullet";
+var g_bulletMass = 0.2;
 
 var g_sprites;
 var g_assetList = [
@@ -264,13 +265,13 @@ function GeneratePlayer()
 			if(g_keyManager.fireState())
 			{
 				var pos = Vec3Copy(this.position);
-				pos.r += (Math.PI/16)*(Math.random()-0.5);
+				pos.r += (Math.PI/32)*(Math.random()-0.5);
 				var event = 
 				{
 					type: "shot",
 					position: pos,
 					velocity: Vec2XY(pos.r, g_weaponSpeed),
-					mass: 1
+					mass: g_bulletMass
 				}
 				AddEvent(g_eventQueue, event);
 				
@@ -414,12 +415,12 @@ function GenerateSystem()
 			var speed = 2;
 			var projectile = {
 				position : {x: event.origin.x, y: event.origin.y, r: angle},
-				velocity : Vec2XY(angle, speed),
+				velocity : Vec2XY(angle+Math.PI, speed),
 				acceleration : {x: 0, y: 0},
 				mass: 10,
 				target: {x: event.position.x, y: event.position.y},
 				target_proximiny: 6,
-				target_event: {type: "explosion", yield: 50},
+				target_event: {type: "explosion", yield: 20},
 				image: GetSprite(g_missileKey)
 			};
 			this.projectiles[this.projectiles.length] = projectile;
@@ -427,6 +428,7 @@ function GenerateSystem()
 		GenerateExplosion : function(event)
 		{
 			event.max_distance = event.yield;
+			event.distance = 0;
 			event.decay_rate = event.yield/20;
 			event.Filter = function(target){return NearTarget(this.position, target.position, this.max_distance);};
 			event.Apply = function(target){
@@ -434,7 +436,7 @@ function GenerateSystem()
 				var local_y = this.position.y - target.position.y;
 				var angle = Math.atan2(local_y, local_x);
 				var distance = 1 + Math.sqrt(Math.pow(local_x, 2) + Math.pow(local_y, 2));
-				var magnitude = this.yield/(target.mass*Math.pow(distance, 2));
+				var magnitude = this.yield/(target.mass*Math.pow(distance,2));
 				Vec2Add(target.acceleration, Vec2XY(angle, magnitude));
 			};
 			this.explosions[this.explosions.length] = event;
@@ -447,7 +449,8 @@ function GenerateSystem()
 				velocity: event.velocity,
 				acceleration: {x: 0, y:0, r: 0},
 				mass: event.mass,
-				image: GetSprite(g_bulletKey)
+				image: GetSprite(g_bulletKey),
+				target_event: {type: "impulse"}
 			};
 			this.projectiles[this.projectiles.length] = bullet;
 		},
@@ -486,6 +489,7 @@ function GenerateSystem()
 	system.eventHandlers["click"] = system.LaunchProjectile.bind(system);
 	system.eventHandlers["explosion"] = system.GenerateExplosion.bind(system); 
 	system.eventHandlers["shot"] = system.SpawnBullets.bind(system);
+	//system.eventHandlers["implulse"] = system.
 	while(system.asteroids.length < desired_asteroid_count)
 	{
 		system.asteroids[system.asteroids.length] = GenerateAsteroid();
@@ -503,8 +507,8 @@ function ApplyGravitation(system, time_delta, pva_object)
 	var distance = Math.sqrt(Math.pow(pva_object.position.x, 2) + Math.pow(pva_object.position.y, 2));
 	var gravity = ( g_gravity * system.planet.mass )/Math.pow(distance, 2);
 	var angle = Math.atan2(pva_object.position.y, pva_object.position.x);
-	Vec2Add(asteroid.velocity, asteroid.acceleration, time_delta);
-	Vec2Set(asteroid.acceleration, Vec2XY(angle+Math.PI, gravity), time_delta);
+	Vec2Add(pva_object.velocity, pva_object.acceleration, time_delta);
+	Vec2Set(pva_object.acceleration, Vec2XY(angle+Math.PI, gravity), time_delta);
 }
 
 function UpdateSystem(system)
@@ -536,6 +540,7 @@ function UpdateSystem(system)
 	
 		}
 		//Update projectiles
+		system.finished_projectiles = system.finished_projectiles.filter( onlyUnique );
 		for(var index = 0; index < system.finished_projectiles.length; ++ index)
 		{
 			system.projectiles.splice(system.finished_projectiles[index], 1);
@@ -565,6 +570,17 @@ function UpdateSystem(system)
 					AddEvent(g_eventQueue, event);
 					system.finished_projectiles[system.finished_projectiles.length] = index;
 				}
+			}else{
+				for(var aster_index = 0; aster_index < system.asteroids.length; ++aster_index)
+				{
+					var asteroid = system.asteroids[aster_index];
+					if(NearTarget(projectile.position, asteroid.position, asteroid.size/2))
+					{
+						Log("Bullet:", "Hit");
+						Vec3Add(asteroid.acceleration, Vec2XY(projectile.position.r, projectile.mass));
+						system.finished_projectiles[system.finished_projectiles.length] = index;
+					}
+				}
 			}
 		}
 		var finished_explosions = [];
@@ -572,7 +588,8 @@ function UpdateSystem(system)
 		{
 			var explosion = system.explosions[index];
 			explosion.yield = explosion.yield - explosion.decay_rate * time_delta;
-			explosion.max_distance = explosion.max_distance - explosion.decay_rate * time_delta;
+			explosion.max_distance -= explosion.decay_rate * time_delta;
+			explosion.distance += explosion.decay_rate * time_delta;
 			if(explosion.max_distance < 1)
 			{
 				finished_explosions[finished_explosions.length] = index;
@@ -757,10 +774,10 @@ function DrawStar(canvas, star)
 function DrawExplosion(canvas, explosion)
 {
 	canvas.beginPath();
-	var blast = canvas.createRadialGradient(explosion.position.x+g_windowSize/2,explosion.position.y+g_windowSize/2,explosion.max_distance/2, explosion.position.x+g_windowSize/2, explosion.position.y+g_windowSize/2, explosion.max_distance);
+	var blast = canvas.createRadialGradient(explosion.position.x+g_windowSize/2,explosion.position.y+g_windowSize/2,explosion.distance/2, explosion.position.x+g_windowSize/2, explosion.position.y+g_windowSize/2, explosion.distance);
 	blast.addColorStop(0, "red");
 	blast.addColorStop(1, "yellow");
-	canvas.arc(explosion.position.x+g_windowSize/2, explosion.position.y+g_windowSize/2, explosion.max_distance, 0, g_circleRad);
+	canvas.arc(explosion.position.x+g_windowSize/2, explosion.position.y+g_windowSize/2, explosion.distance, 0, g_circleRad);
 	canvas.fillStyle = blast;
 	canvas.fill();
 }
@@ -869,4 +886,8 @@ function Log(component, message)
 		$(log_message).append("time: " + component + "<br/><p>" + message +"</p>");  
 		$(logwindow).append(log_message);
 	}
+}
+
+function onlyUnique(value, index, self) { 
+    return self.indexOf(value) === index;
 }
