@@ -2,11 +2,11 @@ var g_windowSize = 512;
 var g_gameWindowId = "gamewindow";
 
 var g_planetRadius = 64;
-var g_planetMass = 10;
+var g_planetMass = 20;
 var g_planetImageKey = "PLANET";
-var g_gravity = 5;
-var g_damping = 5;
-var g_maxDamping = 10;
+var g_gravity = 7;
+var g_damping = 3;
+var g_maxDamping = 8;
 var g_stickyFactor = 1;
 
 var g_numOrbits = 3;
@@ -16,10 +16,11 @@ var g_asteroidImageKey = "asteroid";
 var g_maxAsteroidSize = 16;
 var g_minAsteroidSize = 8;
 var g_asteroidMass = 1;
-var g_initialVelocity = 10;
+var g_initialVelocity = 15;
+var g_velocityGain = 2;
 
-var g_maxAsteroidCount = 100;
-var g_minAsteroidCount = 50;
+var g_maxAsteroidCount = 150;
+var g_minAsteroidCount = 75;
 
 var g_maxStarSize = 5;
 var g_minStarSize = 1;
@@ -45,9 +46,10 @@ var g_fps_target = 60;
 var g_physicsResolution = 0.1;
 var g_lastUpdate = (new Date()).getTime();
 var g_vectorScale = 5;
-var g_debugDrawPhysicsVectors = true;
+var g_debugDrawPhysicsVectors = false;
 var g_debugDrawDampingArcs = false;
-var g_debugDrawCollisionVectors = true;
+var g_debugDrawCollisionVectors = false;
+var g_debugHighlightActive = false;
 var g_logEnabled = true;
 
 var g_canvas = 0;
@@ -56,9 +58,10 @@ var g_lastMouse = {x: 0, y: 0};
 
 var g_missileKey = "missile";
 var g_projectileSize = 16;
+var g_missileSpeed = 3;
 
 var g_playerKey = "player";
-var g_weaponSpeed = 7;
+var g_weaponSpeed = 8;
 
 var g_bulletKey = "bullet";
 var g_bulletMass = 0.2;
@@ -434,10 +437,10 @@ function GenerateSystem()
 			var local_y = event.position.y - event.origin.y;
 			var distance = Math.sqrt(Math.pow(local_x, 2) + Math.pow(local_y, 2));
 			var angle = Math.atan2(local_y, local_x);
-			var speed = 2;
+			var speed = g_missileSpeed;
 			var projectile = {
 				position : {x: event.origin.x, y: event.origin.y, r: angle},
-				velocity : Vec3XY(angle+Math.PI, speed),
+				velocity : Vec3XY(angle, speed),
 				acceleration : {x: 0, y: 0, r:0},
 				mass: 10,
 				target: {x: event.position.x, y: event.position.y},
@@ -587,7 +590,7 @@ function UpdateSystem(system)
 			}
 				
 			projectile.position = Vec3Add(projectile.position, projectile.velocity, time_delta);
-			ApplyGravitation(system, time_delta, projectile);
+			//ApplyGravitation(system, time_delta, projectile);
 			
 			if(typeof projectile.target != 'undefined')
 			{
@@ -608,7 +611,7 @@ function UpdateSystem(system)
 					if(NearTarget(projectile.position, asteroid.position, asteroid.size/2))
 					{
 						Log("Bullet:", "Hit");
-						asteroid.acceleration = Vec3Add(asteroid.acceleration, Vec3XY(projectile.position.r, projectile.mass));
+						asteroid.acceleration = Vec3Add(asteroid.acceleration, Vec3XY(projectile.position.r, projectile.mass), time_delta);
 						system.finished_projectiles[system.finished_projectiles.length] = index;
 					}
 				}
@@ -635,25 +638,66 @@ function UpdateSystem(system)
 		while((collision_pool.length > 1) && (source < collision_pool.length-1))
 		{
 			var pva_source = collision_pool[source];
-			//Create collision path
-			var collision_path = 
-				{
-					start: {x: 0, y: 0},
-					end: {x: 0, y: 0},
-					width: pva_source.size/2
-				};
-			var local_pool = collision_pool.filter( onlyNear , pva_source);
-			for(var target = 0; target < local_pool.length; ++target)
+			if(g_debugHighlightActive)
 			{
-				var pva_target = collision_pool[target];
-				//Build collision path per object since collisions modify it
-				
-				collision_path.start = pva_source.position;
-				collision_path.end = Vec3Add(Vec3Copy(pva_source.position), pva_source.velocity);
-				if(InPath(collision_path, pva_target.position, pva_target.size/2))
+				Highlight(pva_source);
+			}
+			//Create collision path
+			//var collision_path = 
+			//	{
+			//		start: {x: 0, y: 0},
+			//		end: {x: 0, y: 0},
+			//		width: pva_source.size/2
+			//	};
+			var local_pool = collision_pool.filter( onlyNear , pva_source);
+			var direction = Vec2Angle(pva_source.velocity);
+			var collided = false;
+			//Swept collisions
+			if(local_pool.length > 0)
+			{
+			for(var step = 0; (step < Vec2Magnitude(pva_source.velocity)) && (collided == false); step += g_physicsResolution)
+			{
+				var position = Vec3Add(pva_source.position, Vec3XY(direction, step));
+				for(var target = 0; target < local_pool.length; ++target)
 				{
-					ApplyCollision(pva_source, pva_target,time_delta);
+					var pva_target = local_pool[target];
+					if(g_debugHighlightActive)
+					{
+						Highlight(pva_target);
+					}
+					//Build collision path per object since collisions modify it
+					if(g_debugDrawCollisionVectors)
+					{
+						//Draw a size vector towards the other object
+						var ts_angle = Vec2Angle(Vec3Sub(pva_source.position, pva_target.position));
+						var st_angle = Vec2Angle(Vec3Sub(pva_target.position, pva_source.position));
+						g_canvas.stokeStyle = "#9999FF";
+						g_canvas.beginPath();
+						g_canvas.moveTo(pva_source.position.x+g_windowSize/2, pva_source.position.y+g_windowSize/2);
+						var term = Vec3Add(pva_source.position, Vec3XY(st_angle, pva_source.size));
+						g_canvas.lineTo(term.x+g_windowSize/2, term.y+g_windowSize/2);
+						g_canvas.stroke();
+						g_canvas.beginPath();
+						g_canvas.moveTo(pva_target.position.x+g_windowSize/2, pva_target.position.y+g_windowSize/2);
+						term = Vec3Add(pva_target.position, Vec3XY(ts_angle, pva_target.size));
+						g_canvas.lineTo(term.x+g_windowSize/2, term.y+g_windowSize/2);
+						g_canvas.stroke();
+					}
+					if(NearTarget(position, pva_target.position, pva_source.size + pva_target.size))
+					{
+						ApplyCollision(pva_source, pva_target,time_delta);
+						collided = true;
+					}
+					if(g_debugHighlightActive)
+					{
+						Unhighlight(pva_target);
+					}
 				}
+			}
+			}
+			if(g_debugHighlightActive)
+			{
+				Unhighlight(pva_source);
 			}
 			collision_pool.splice(source, 1);
 			source++;
@@ -667,8 +711,8 @@ function UpdateSystem(system)
 
 function ApplyCollision(pva_source, pva_target, time_delta)
 {
-	var source_force = pva_source.mass * Vec2Magnitude(pva_source.velocity)/2;
-	var target_force = pva_target.mass * Vec2Magnitude(pva_target.velocity)/2;
+	var source_force = pva_source.mass * Vec2Magnitude(pva_source.velocity)/5;
+	var target_force = pva_target.mass * Vec2Magnitude(pva_target.velocity)/5;
 	//Determine point of intersection and truncate velocities
 	var intersect = Vec3Intersect(pva_source.position, pva_target.position, Vec3Add(pva_source.position, pva_source.velocity), Vec3Add(pva_target.position, pva_target.velocity));
 	if(intersect.valid)
@@ -682,7 +726,7 @@ function ApplyCollision(pva_source, pva_target, time_delta)
 	var angle = Vec2Angle(local_vec);
 	
 	pva_target.velocity = Vec3Add(pva_target.velocity, Vec3XY(angle, source_force/pva_target.mass), time_delta);
-	pva_target.velocity = Vec3Add(pva_source.velocity, Vec3XY(angle, target_force/pva_source.mass), time_delta);
+	pva_source.velocity = Vec3Add(pva_source.velocity, Vec3XY(angle+Math.PI, target_force/pva_source.mass), time_delta);
 }
 
 function AddEvent(queue, event)
@@ -729,7 +773,7 @@ function InPath(path, target, tolerance)
 function NearTarget(object, target, tolerance)
 {
 	var distance = Math.sqrt(Math.pow(target.x - object.x,2) + Math.pow(target.y - object.y,2));
-	return distance < tolerance;
+	return distance <= tolerance;
 }
 
 function DampVelocityToOrbit(asteroid, time_delta)
@@ -782,25 +826,6 @@ function DampVelocityToOrbit(asteroid, time_delta)
 	}
 	
 }
-
-//function Vec2Set(a, b, time)
-//{
-//	if(typeof time == 'undefined')
-//		time = 1;
-//	a.x = b.x * time;
-//	a.y = b.y * time;
-//	return a;
-//}
-
-//function Vec2Add(a, b, time)
-//{
-//	result = {};
-//	if(typeof time == 'undefined')
-//		time = 1;
-//	result = a.x + (b.x * time);
-//	result = a.y + (b.y * time);
-//	return result;
-//}
 
 function Vec3XY(angle, magnitude)
 {
@@ -922,6 +947,22 @@ function Vec3Sub(a, b, time_delta) {
 	return result;
 }
 
+function Highlight(pva_object)
+{
+	g_canvas.beginPath();
+	g_canvas.strokeStyle = "#FF0000";
+	g_canvas.arc(pva_object.position.x+g_windowSize/2, pva_object.position.y+g_windowSize/2, pva_object.size/2+5, 0, g_circleRad);
+	g_canvas.stroke();
+}
+
+function Unhighlight(pva_object)
+{
+	g_canvas.beginPath();
+	g_canvas.strokeStyle = "#000000";
+	g_canvas.arc(pva_object.position.x+g_windowSize/2, pva_object.position.y+g_windowSize/2, pva_object.size/2+5, 0, g_circleRad);
+	g_canvas.stroke();
+}
+
 function DrawRotated(image, x, y, angle) { 
  
 	this.save(); 
@@ -948,6 +989,17 @@ function DrawPhysicsVectors(canvas, pva_object)
 	canvas.strokeStyle = "#00FF00";
 	canvas.moveTo(pva_object.position.x+(g_windowSize/2), pva_object.position.y+(g_windowSize/2));
 	canvas.lineTo(pva_object.position.x+(g_windowSize/2)+pva_object.acceleration.x*(g_vectorScale/g_timeScale), pva_object.position.y+(g_windowSize/2)+pva_object.acceleration.y*(g_vectorScale/g_timeScale));
+	canvas.stroke();
+}
+
+function DrawCollisionVectors(canvas, pva_object)
+{
+	canvas.beginPath();
+	canvas.strokeStyle = "#AAAAFF";
+	canvas.arc(pva_object.position.x+g_windowSize/2, pva_object.position.y+g_windowSize/2, pva_object.size/2, 0, g_circleRad);
+	canvas.stroke();
+	canvas.strokeStyle = "#FFFFDD";
+	canvas.arc(pva_object.position.x+g_windowSize/2, pva_object.position.y+g_windowSize/2, pva_object.size/2 + Vec2Magnitude(pva_object.velocity), 0, g_circleRad);
 	canvas.stroke();
 }
 
@@ -1016,6 +1068,10 @@ function DrawAsteroid(canvas, asteroid)
 	{
 		DrawPhysicsVectors(canvas, asteroid);
 	}
+	if(g_debugDrawCollisionVectors)
+	{
+		DrawCollisionVectors(canvas, asteroid);
+	}
 }
 
 function DrawPlanet(canvas, planet)
@@ -1061,6 +1117,10 @@ function DrawProjectile(canvas, projectile)
 	if(g_debugDrawPhysicsVectors)
 	{
 		DrawPhysicsVectors(canvas, projectile);
+	}
+	if(g_debugDrawCollisionVectors)
+	{
+		DrawCollisionVectors(canvas, projectile);
 	}
 }
 
@@ -1110,5 +1170,5 @@ function onlyUnique(value, index, self) {
 }
 
 function onlyNear(value, index, collection) {
-	return !(value === this) && Vec2Magnitude(Vec2Sub(this.position, value.position)) < (this.size + Vec2Magnitude(this.velocity));
+	return !(value === this) && Vec2Magnitude(Vec3Sub(this.position, value.position)) < (this.size + Vec2Magnitude(this.velocity));
 }
