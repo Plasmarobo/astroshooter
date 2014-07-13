@@ -55,14 +55,23 @@ var g_lastMouse = {x: 0, y: 0};
 var g_missileKey = "missile";
 var g_projectileSize = 16;
 
+var g_playerKey = "player";
+var g_weaponSpeed = 7;
+
+var g_bulletKey = "bullet";
+
 var g_sprites;
 var g_assetList = [
 	g_planetImageKey,
 	g_asteroidImageKey,
-	g_missileKey
+	g_missileKey,
+	g_playerKey,
+	g_bulletKey
 ];
-
+var g_keyManager = null;
 var g_eventQueue = [];
+
+
 
 $(document).ready(InitializeGame);
 
@@ -143,32 +152,177 @@ function GetCanvas()
 {
 	var canvas = document.getElementById(g_gameWindowId);
 	canvas.onmousemove = function(evt) {
-	
 			g_lastMouse = (function() {
 				var rect = canvas.getBoundingClientRect();
 				return {
 					position: {
-					x: evt.clientX - rect.left,
-					y: evt.clientY - rect.top
-					}
-					};
-				})();
-				
-			};
-	canvas.onmousedown = function(evt) {
-			var rect = canvas.getBoundingClientRect();
-			g_eventQueue[g_eventQueue.length] = (function() {
-				return {
-					type: "click",
-					position:
-					{
-					x: (evt.clientX - rect.left - g_windowSize/2),
-					y: (evt.clientY - rect.top - g_windowSize/2)
+						x: evt.clientX - rect.left,
+						y: evt.clientY - rect.top
 					}
 				};
+			})();		
+		};
+	canvas.onmousedown = function(evt) {
+		var rect = canvas.getBoundingClientRect();
+		g_eventQueue[g_eventQueue.length] = (function() {
+			return {
+				type: "click",
+				position:
+				{
+					x: (evt.clientX - rect.left - g_windowSize/2),
+					y: (evt.clientY - rect.top - g_windowSize/2)
+				}
+				};
 			})();
-			};
+		};
+	g_keyManager = {
+		_pressed: {},
+
+		LEFT: 37,
+		UP: 38,
+		RIGHT: 39,
+		DOWN: 40,
+		W: 87,
+		A: 65,
+		S: 83,
+		D: 68,
+		SPACE: 32,
+ 
+		isDown: function(keyCode) {
+			return this._pressed[keyCode];
+		},
+		onKeydown: function(event) {
+			this._pressed[event.keyCode] = true;
+		},
+		onKeyup: function(event) {
+			delete this._pressed[event.keyCode];
+		},
+		upState: function() {
+			return this._pressed[this.UP] || this._pressed[this.W];
+		},
+		downState: function() {
+			return this._pressed[this.DOWN] || this._pressed[this.S];
+		},
+		leftState: function() {
+			return this._pressed[this.LEFT] || this._pressed[this.A];
+		},
+		rightState: function() {
+			return this._pressed[this.RIGHT] || this._pressed[this.D];
+		},
+		fireState: function() {
+			return this._pressed[this.SPACE];
+		}
+	};
+	window.addEventListener('keyup', function(event) { g_keyManager.onKeyup(event); event.preventDefault(); }, false);
+	window.addEventListener('keydown', function(event) { g_keyManager.onKeydown(event); event.preventDefault(); }, false);
+
 	return canvas.getContext("2d");
+}
+
+function GeneratePlayer()
+{
+	var player = {
+		engine_power: 0.0005, //Forward thrust
+		thruster_power: 0.0005, //Rotational thrust
+		engine_damping: 0.01, //Slowly damp forward thrust
+		thruster_damping: 0.008, //Rapidly damp rotation
+		weapon_kick: 0.00001,
+		position: {x: 0, y: 0, r: 0},
+		velocity: {x: 0, y: 0, r: 0},
+		acceleration: {x: 0, y: 0, r: 0},
+		armor: 0,
+		shield: 10,
+		fuel: 10,
+		image: GetSprite(g_playerKey),
+		DrawHUD: function(canvas){
+		},
+		perform_damp: false,
+		HandleInput: function(time_delta)
+		{
+			this.perform_damp = true;
+			if(g_keyManager.rightState() || g_keyManager.leftState())
+			{
+				if(g_keyManager.rightState())
+					this.acceleration.r = this.thruster_power*time_delta;
+				else
+					this.acceleration.r = -this.thruster_power*time_delta;
+				this.perform_damp = false;
+			}
+			
+			if(g_keyManager.downState())
+			{
+
+				Vec2Add(this.acceleration, Vec2XY(this.position.r+Math.PI, this.engine_power/2), time_delta);
+				
+				this.perform_damp = false;
+			}
+			if(g_keyManager.upState())
+			{
+				Vec2Add(this.acceleration, Vec2XY(this.position.r, this.engine_power), time_delta);
+				this.perform_damp = false;
+			}
+			if(g_keyManager.fireState())
+			{
+				var pos = Vec3Copy(this.position);
+				pos.r += (Math.PI/16)*(Math.random()-0.5);
+				var event = 
+				{
+					type: "shot",
+					position: pos,
+					velocity: Vec2XY(pos.r, g_weaponSpeed),
+					mass: 1
+				}
+				AddEvent(g_eventQueue, event);
+				
+				Vec2Add(this.acceleration, Vec2XY(this.position.r+Math.PI, this.weapon_kick), time_delta);
+				
+				//this.perform_damp = false;
+			}
+		},
+		Update: function(time_delta) {
+			this.HandleInput(time_delta);
+			if(this.perform_damp)
+			{
+				//No keys, no accel
+				this.acceleration = {x: 0, y: 0, r: 0};
+				//Determine direction to apply damping
+				var angle = Math.atan2(this.velocity.y, this.velocity.x);
+				var damping = {x: 0, y: 0, r: 0};
+				if(Math.sqrt(Math.pow(this.velocity.x,2) + Math.pow(this.velocity.y,2)) < this.engine_damping)
+					damping = Vec3Copy(this.velocity);
+				else
+					damping = Vec2XY(angle+Math.PI, this.engine_damping * time_delta);
+				if(Math.abs(this.velocity.r) >= this.thruster_damping * time_delta)
+				{
+					if(this.velocity.r < 0){
+						damping.r = this.thruster_damping * time_delta;
+					}else if(this.velocity.r > 0){
+						damping.r = -this.thruster_damping * time_delta;
+					}
+				}else damping.r = -this.velocity.r;
+				Vec3Add(this.velocity,damping); 
+			}
+			Vec3Add(this.position, this.velocity, time_delta);
+			Vec3Add(this.velocity, this.acceleration, time_delta);
+		},
+		DrawPlayer: function(canvas)
+		{
+			if(this.image)
+			{
+				canvas.drawRotated(this.image, this.position.x, this.position.y, this.position.r+Math.PI/2);
+			}else{
+				canvas.fillStyle = "#FFFFFF";
+				canvas.strokeStyle = "#000000";
+				canvas.fillRect(this.position.x, this.position.y, this.position.x + 32, this.position.y+32);
+			}
+			if(g_debugDrawPhysicsVectors)
+			{
+				DrawPhysicsVectors(canvas, this);
+			}
+		}
+	}
+	return player;
+	
 }
 
 function GenerateOrbitalPosition(orbitIndex)
@@ -241,6 +395,7 @@ function GenerateSystem()
 					mass: g_planetMass,
 					image: GetSprite(g_planetImageKey)
 				},
+		player: {},
 		stars: [],
 		asteroids: [],
 		ships: [],
@@ -258,8 +413,7 @@ function GenerateSystem()
 			var angle = Math.atan2(local_y, local_x);
 			var speed = 2;
 			var projectile = {
-				heading: angle,
-				position : {x: event.origin.x, y: event.origin.y},
+				position : {x: event.origin.x, y: event.origin.y, r: angle},
 				velocity : Vec2XY(angle, speed),
 				acceleration : {x: 0, y: 0},
 				mass: 10,
@@ -285,6 +439,17 @@ function GenerateSystem()
 			};
 			this.explosions[this.explosions.length] = event;
 			this.Broadcast(event);
+		},
+		SpawnBullets : function(event)
+		{
+			var bullet = {
+				position: event.position,
+				velocity: event.velocity,
+				acceleration: {x: 0, y:0, r: 0},
+				mass: event.mass,
+				image: GetSprite(g_bulletKey)
+			};
+			this.projectiles[this.projectiles.length] = bullet;
 		},
 		Broadcast : function(event)
 		{
@@ -312,13 +477,15 @@ function GenerateSystem()
 					event.Apply(projectile);
 				}
 			}
-		}
+		}	
 	}
 	var desired_asteroid_count = Math.floor(Math.random()*(g_maxAsteroidCount-g_minAsteroidCount))+g_minAsteroidCount;
 	var desired_star_count = Math.floor(Math.random()*100)+5;
+	system.player = GeneratePlayer();
 	system.eventHandlers = new Object;
 	system.eventHandlers["click"] = system.LaunchProjectile.bind(system);
 	system.eventHandlers["explosion"] = system.GenerateExplosion.bind(system); 
+	system.eventHandlers["shot"] = system.SpawnBullets.bind(system);
 	while(system.asteroids.length < desired_asteroid_count)
 	{
 		system.asteroids[system.asteroids.length] = GenerateAsteroid();
@@ -329,6 +496,15 @@ function GenerateSystem()
 		system.stars[system.stars.length] = GenerateStar();
 	}
 	return system;
+}
+
+function ApplyGravitation(system, time_delta, pva_object)
+{
+	var distance = Math.sqrt(Math.pow(pva_object.position.x, 2) + Math.pow(pva_object.position.y, 2));
+	var gravity = ( g_gravity * system.planet.mass )/Math.pow(distance, 2);
+	var angle = Math.atan2(pva_object.position.y, pva_object.position.x);
+	Vec2Add(asteroid.velocity, asteroid.acceleration, time_delta);
+	Vec2Set(asteroid.acceleration, Vec2XY(angle+Math.PI, gravity), time_delta);
 }
 
 function UpdateSystem(system)
@@ -347,19 +523,16 @@ function UpdateSystem(system)
 		time_delta = g_maxTimestep;
 	}
 		g_gameTime += time_delta;
+		//Update player
+		system.player.Update(time_delta);
+		
 		//Update asteroids
 		for(var index = 0; index < system.asteroids.length; ++index)
 		{
 			var asteroid = system.asteroids[index];
 		
-			var distance = Math.sqrt(Math.pow(asteroid.position.x, 2) + Math.pow(asteroid.position.y, 2));
-			var gravity = ( g_gravity * system.planet.mass )/Math.pow(distance, 2);
-		
-			var angle = Math.atan2(asteroid.position.y, asteroid.position.x);
-		
 			DampVelocityToOrbit(asteroid, time_delta);
-			Vec2Add(asteroid.velocity, asteroid.acceleration, time_delta);
-			Vec2Set(asteroid.acceleration, Vec2XY(angle+Math.PI, gravity), time_delta); 
+			ApplyGravitation(system, time_delta, asteroid);
 	
 		}
 		//Update projectiles
@@ -378,17 +551,20 @@ function UpdateSystem(system)
 			}
 				
 			Vec2Add(projectile.position, projectile.velocity, time_delta);
-			Vec2Add(projectile.velocity, projectile.acceleration, time_delta);
+			ApplyGravitation(system, time_delta, projectile);
 			
-			if(NearTarget(projectile.position, projectile.target, projectile.target_proximiny))
+			if(typeof projectile.target != 'undefined')
 			{
-				Log("Projectile:", "Target Hit!");
-				var event = projectile.target_event;
-				
-				event.position = projectile.position;
-				
-				AddEvent(g_eventQueue, event);
-				system.finished_projectiles[system.finished_projectiles.length] = index;
+				if(NearTarget(projectile.position, projectile.target, projectile.target_proximiny))
+				{
+					Log("Projectile:", "Target Hit!");
+					var event = projectile.target_event;
+					
+					event.position = projectile.position;
+					
+					AddEvent(g_eventQueue, event);
+					system.finished_projectiles[system.finished_projectiles.length] = index;
+				}
 			}
 		}
 		var finished_explosions = [];
@@ -492,6 +668,26 @@ function Vec2XY(angle, magnitude)
 	return {x: magnitude * Math.cos(angle), y: magnitude * Math.sin(angle)};
 }
 
+function Vec3Add(a, b, time)
+{
+	if(typeof time == 'undefined')
+		time = 1;
+	if(typeof b.r != 'undefined')
+		a.r += b.r * time;
+	a.x += (b.x * time);
+	a.y += (b.y * time);
+}
+
+function Vec3Copy(b)
+{
+	a = {x: 0, y: 0, r: 0};
+	if(typeof b.r != 'undefined')
+		a.r = b.r;
+	a.x = b.x;
+	a.y = b.y;
+	return a;
+}
+
 function DrawRotated(image, x, y, angle) { 
  
 	this.save(); 
@@ -545,6 +741,7 @@ function DrawSystem(canvas, system)
 		projectile = system.projectiles[index];
 		DrawProjectile(canvas, projectile);
 	}
+	system.player.DrawPlayer(canvas);
 	//DrawCursor(canvas, g_lastMouse.position);
 }
 
@@ -604,25 +801,28 @@ function DrawProjectile(canvas, projectile)
 {
 	if(projectile.image)
 	{
-		canvas.drawRotated(projectile.image, projectile.position.x, projectile.position.y, projectile.heading+Math.PI/2);
+		canvas.drawRotated(projectile.image, projectile.position.x, projectile.position.y, projectile.position.r+Math.PI/2);
 	}else{
 		canvas.strokeStyle = "#FFFF00";
 		canvas.beginPath();
 		canvas.arc(projectile.position.x - g_windowSize/2, projectile.position.y - g_windowSize/2, 4, 0, g_circleRad);
 		canvas.stroke();
 	}
-	canvas.strokeStyle = "#FFFF00";
-	canvas.beginPath();
-	canvas.arc(projectile.target.x+g_windowSize/2, projectile.target.y+g_windowSize/2, 5, 0, g_circleRad);
-	canvas.stroke();
-	canvas.beginPath();
-	canvas.moveTo(projectile.target.x+g_windowSize/2, projectile.target.y+g_windowSize/2, g_windowSize/2);
-	canvas.lineTo(projectile.target.x+5+g_windowSize/2, projectile.target.y+g_windowSize/2);
-	canvas.lineTo(projectile.target.x-5+g_windowSize/2, projectile.target.y+g_windowSize/2);
-	canvas.moveTo(projectile.target.x+g_windowSize/2, projectile.target.y+g_windowSize/2, g_windowSize/2);
-	canvas.lineTo(projectile.target.x+g_windowSize/2, projectile.target.y+5+g_windowSize/2);
-	canvas.lineTo(projectile.target.x+g_windowSize/2, projectile.target.y-5+g_windowSize/2);
-	canvas.stroke();
+	if(typeof projectile.target != 'undefined')
+	{
+		canvas.strokeStyle = "#FFFF00";
+		canvas.beginPath();
+		canvas.arc(projectile.target.x+g_windowSize/2, projectile.target.y+g_windowSize/2, 5, 0, g_circleRad);
+		canvas.stroke();
+		canvas.beginPath();
+		canvas.moveTo(projectile.target.x+g_windowSize/2, projectile.target.y+g_windowSize/2, g_windowSize/2);
+		canvas.lineTo(projectile.target.x+5+g_windowSize/2, projectile.target.y+g_windowSize/2);
+		canvas.lineTo(projectile.target.x-5+g_windowSize/2, projectile.target.y+g_windowSize/2);
+		canvas.moveTo(projectile.target.x+g_windowSize/2, projectile.target.y+g_windowSize/2, g_windowSize/2);
+		canvas.lineTo(projectile.target.x+g_windowSize/2, projectile.target.y+5+g_windowSize/2);
+		canvas.lineTo(projectile.target.x+g_windowSize/2, projectile.target.y-5+g_windowSize/2);
+		canvas.stroke();
+	}
 	
 	if(g_debugDrawPhysicsVectors)
 	{
